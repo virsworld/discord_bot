@@ -9,6 +9,7 @@ Package(s):
 - yt_dlp
 - ffmpeg
 - python-dotenv
+
 Other:
 - Discord Bot Token (found in developer portal)
 - Server ID
