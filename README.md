@@ -3,6 +3,7 @@ To run the bot locally you need...
 
 API(s):
 - YouTube Data API v3 API
+
 Package(s):
 - discord.py
 - yt_dlp
