@@ -13,4 +13,5 @@ Package(s):
 Other:
 - Discord Bot Token (found in developer portal)
 - Server ID
+
 Dm at "virwashere" on discord for questions
