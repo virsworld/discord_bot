@@ -8,6 +8,7 @@ import asyncio
 from pathlib import Path
 import random
 from googleapiclient.discovery import build
+from discord.ui import Button, View
 
 # Setup Youtube DL library
 ytdl_options = {
@@ -61,14 +62,20 @@ class YTDLSource(discord.PCMVolumeTransformer):
             part='snippet',
             q=query,
             type='video',
-            maxResults=1,
+            maxResults=5,
             videoCategoryId='10',  # Music category
         )
         response = request.execute()
-        if response['items']:
-            video_id = response['items'][0]['id']['videoId']
-            return f"https://www.youtube.com/watch?v={video_id}"
-        return None
+        if (not response):
+            return False
+        
+        results=[]
+        for item in response['items']:
+            video_id = item['id']['videoId']
+            title = item['snippet']['title']
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            results.append((title, url))
+        return results
     
     @classmethod
     async def from_data(cls, data, *, position=0):
@@ -120,6 +127,27 @@ class MyClient(discord.Client):
         else:
             self.is_playing = False
 
+class SongSelectionView(View):
+    def __init__(self, results):
+        super().__init__(timeout=30.0)  # Set the timeout for how long the view will listen for interactions
+        self.results = results
+        self.selected_song = None
+
+        for i, (title, url) in enumerate(results):
+            # Add a button for each result
+            if (len(f"{i + 1}. {title}") > 80):
+                title = title[:77]
+            button = Button(label=f"{i + 1}. {title}", custom_id=str(i))
+            button.callback = self.create_callback(url)
+            self.add_item(button)
+
+    def create_callback(self, url):
+        async def callback(interaction: discord.Interaction):
+            self.selected_song = url
+            self.stop()  # Stop listening for interactions
+            await interaction.response.send_message(f"Selected: {self.results[int(interaction.data['custom_id'])][0]}")
+        return callback
+
 # load sercets
 load_dotenv()
 MY_GUILD = discord.Object(os.environ['GUILD'])
@@ -148,18 +176,35 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.response.send_message(embed=embed)
             return
     if (client.current_voice_channel):
+        defer = False
         if (not query.startswith("http://") and not query.startswith("https://")):
-            query = await YTDLSource.from_query(query)   
-            if (not query):
+            await interaction.response.defer(ephemeral=True)
+            defer = True
+            results = await YTDLSource.from_query(query)
+            if not results:  
                 msg = f":no_entry:Failed to find a match on Youtube, try a different query."
                 embed = discord.Embed(description=f"*{msg}*")
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
                 return
+            
+            view = SongSelectionView(results)
+            await interaction.followup.send(view=view)
+
+            await view.wait()  # Wait until the user makes a selection or the view times out
+
+            if view.selected_song is None:
+                await interaction.followup.send(":no_entry: No selection was made.")
+                return
+            query = view.selected_song
+
         players = await YTDLSource.from_url(query, stream=True)
         if (not players):
                 msg = f":no_entry:Failed to find a match on Youtube, try a different query."
                 embed = discord.Embed(description=f"*{msg}*")
-                await interaction.response.send_message(embed=embed)
+                if (defer):
+                    await interaction.followup.send(embed=embed)
+                else:
+                    await interaction.response.send_message(embed=embed)
                 return
         client.queue.extend(players)
         if (not client.is_playing):
@@ -188,7 +233,11 @@ async def play(interaction: discord.Interaction, query: str):
                 if (len(query) > 1024):
                     query = query[:1024]
                 embed.add_field(name="URL", value=query, inline=False)
-                await interaction.response.send_message(embed=embed)
+
+                if (defer):
+                    await interaction.followup.send(embed=embed)
+                else:
+                    await interaction.response.send_message(embed=embed)
         else:
             embed = discord.Embed(title=f"Added to queue", description=f"*{client.queue[-1].title}*", color=discord.Color.blue())
             try:
@@ -210,7 +259,10 @@ async def play(interaction: discord.Interaction, query: str):
             if (len(query) > 1024):
                 query = query[:1024]
             embed.add_field(name="URL", value=query, inline=False)
-            await interaction.response.send_message(embed=embed)
+            if (defer):
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed)
     else:
         msg = f":no_entry:Please join a voice channel first."
         embed = discord.Embed(description=f"*{msg}*")
@@ -312,7 +364,11 @@ async def queue(interaction: discord.Interaction):
         embed = discord.Embed(title=f"Queue List", color=discord.Color.blue())
         embed.set_thumbnail(url="https://i.pinimg.com/1200x/a3/50/c9/a350c99315da169bf3ae5f307391b1bf.jpg")
         for i, song in enumerate(client.queue):
-            embed.add_field(name=f"{i+1}. {song.title}", value=f"Artist: {song.uploader}\nDuration: {song.duration // 60}:{song.duration % 60:02d}", inline=False)
+            try:
+                embed.add_field(name=f"{i+1}. {song.title}", value=f"Artist: {song.uploader}\nDuration: {song.duration // 60}:{song.duration % 60:02d}", inline=False)
+            except Exception as e:
+                embed.add_field(name=f"{i+1}. {song.title}", value=f"Artist: {song.uploader}", inline=False)
+                print(f"{e} for duration")
         await interaction.response.send_message(embed=embed)
     else:
         msg = ":no_entry:The queue is empty."
@@ -477,7 +533,7 @@ async def nowplaying(interaction: discord.Interaction):
 async def help(interaction: discord.Interaction):
     """displays commands"""
     help_message = """
-    `/play <url>` - Plays a song from a URL.
+    `/play <url>` - Plays a song from a query that *can* be URL.
     `/pause` - Pauses the currently playing song.
     `/resume` - Resumes the currently paused song.
     `/stop` - Stops the currently playing song and clears the queue.
